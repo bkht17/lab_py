@@ -1,393 +1,244 @@
-# importing needed modules
-import pygame, sys, random, time
+import pygame
+import pygame_menu
 import psycopg2
-from pygame.math import Vector2
-from configparser import ConfigParser
+import sys
+import random
 
+pygame.init()
 
-def load_config(filename="database.ini", section="postgresql"):
-    parser = ConfigParser()
-    parser.read(filename)
-
-    # get section, default to postgresql
-    config = {}
-    if parser.has_section(section):
-        params = parser.items(section)
-        for param in params:
-            config[param[0]] = param[1]
-    else:
-        raise Exception(
-            "Section {0} not found in the {1} file".format(section, filename)
-        )
-
-    return config
-
-
-config = load_config()
-conn = psycopg2.connect(**config)
+conn = psycopg2.connect("dbname=snake user=bakhyt17 password=2005228")
 cur = conn.cursor()
 
-# Creating table
-cur.execute(
-    """CREATE TABLE IF NOT EXISTS SnakeGame(
-    user_name VARCHAR(255),
-    score INTEGER,
-    level INTEGER
-);
-"""
-)
+class SnakeBlock:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def head_inside(self):
+        return 0 <= self.x <= count_blocks - 1 and 0 <= self.y <= count_blocks - 1
+
+    def __eq__(self, other):
+        return isinstance(other, SnakeBlock) and self.x == other.x and self.y == other.y
+
+class Food:
+    def __init__(self, x, y, weight, time_to_live):
+        self.x = x
+        self.y = y
+        self.weight = weight
+        self.time_to_live = time_to_live
+
+def get_user(username):
+    cur.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+    return cur.fetchone()
+
+def create_user(username):
+    cur.execute("INSERT INTO users (username) VALUES (%s) RETURNING user_id", (username,))
+    conn.commit()
+    return cur.fetchone()[0]
+
+def get_user_level(user_id):
+    cur.execute("SELECT level FROM user_scores WHERE user_id = %s", (user_id,))
+    level = cur.fetchone()
+    return level[0] if level else 1  # Default to level 1 if no data found
+
+def save_game_state(user_id, score, level):
+    cur.execute("INSERT INTO user_scores (user_id, score, level) VALUES (%s, %s, %s)", (user_id, score, level))
+    conn.commit()
+
+def display_pause_menu():
+    """ Display pause menu with options """
+    menu_font = pygame.font.Font(None, 50)
+    save_text = menu_font.render("Save Score and Quit (S)", True, (255, 255, 255))
+    continue_text = menu_font.render("Continue (C)", True, (255, 255, 255))
+    
+    screen.blit(save_text, (50, 200))
+    screen.blit(continue_text, (50, 300))
+    pygame.display.flip()
+
+def draw_block(color, row, column):
+    pygame.draw.rect(screen, color, [block_size + column * block_size + margin * (column + 1),
+                                     header_margin + block_size + row * block_size + margin * (row + 1),
+                                     block_size, block_size])
+
+def random_food():
+    x = random.randint(0, count_blocks - 1)
+    y = random.randint(0, count_blocks - 1)
+    weight = random.randint(1, 3)
+    time_to_live = random.randint(20, 40)
+    new_food = Food(x, y, weight, time_to_live)
+    while SnakeBlock(new_food.x, new_food.y) in snake_list:
+        new_food.x = random.randint(0, count_blocks - 1)
+        new_food.y = random.randint(0, count_blocks - 1)
+    return new_food
+
+def draw_food(food):
+    # Define colors for different weights
+    colors = {
+        1: (255, 0, 0),  # Red for weight 1
+        2: (255, 100, 0),  # Green for weight 2
+        3: (255, 0, 100)   # Blue for weight 3
+    }
+    color = colors.get(food.weight, (255, 255, 255))  # Default to white if weight not in colors
+    draw_block(color, food.x, food.y)
 
 
-def insert_snakegame(user_name, score, level):
-    """Insert a new entry into the snakegame table"""
-    sql = """INSERT INTO SnakeGame(user_name, score, level)
-             VALUES(%s, %s, %s);"""
+block_size = 40
+header_margin = 70
+margin = 1
+count_blocks = 20
+size = [block_size * count_blocks + 2 * block_size + margin * count_blocks,
+        block_size * count_blocks + 2 * block_size + margin * count_blocks + header_margin]
 
-    try:
-        # execute the INSERT statement
-        cur.execute(sql, (user_name, score, level))
+screen = pygame.display.set_mode(size)
+pygame.display.set_caption("SnakeGame")
 
-        # commit the changes to the database
-        conn.commit()
-    except (Exception, psycopg2.DatabaseError) as error:
-        print(error)
+icon = pygame.image.load("lab8/task2/icon.png")
+pygame.display.set_icon(icon)
+clock = pygame.time.Clock()
 
+snake_list = [SnakeBlock(1, 2), SnakeBlock(1, 3)]
+d_row = buf_row = 0
+d_col = buf_col = 1
+apples = [random_food() for _ in range(1)]
+body = 2
+speed = 1
+font = pygame.font.SysFont('Times New Roman', 36)
 
-def get_data():
-    """Retrieve data from the snakegame table"""
-    config = load_config()
-    try:
-        with psycopg2.connect(**config) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT user_name, score, level FROM SnakeGame ORDER BY score"
-                )
-                rows = cur.fetchall()
+run = True
+paused = False
 
-                print("The number of users: ", cur.rowcount)
-                for row in rows:
-                    print(row)
+username = input("Enter your username: ")
+user_data = get_user(username)
 
-    except (Exception, psycopg2.DatabaseError) as error:
-        print(error)
+while run:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            run = False
+            pygame.quit()
+            sys.exit()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_UP and d_col != 0:
+                buf_row = -1
+                buf_col = 0
+            elif event.key == pygame.K_DOWN and d_col != 0:
+                buf_row = 1
+                buf_col = 0
+            elif event.key == pygame.K_LEFT and d_row != 0:
+                buf_row = 0
+                buf_col = -1
+            elif event.key == pygame.K_RIGHT and d_row != 0:
+                buf_row = 0
+                buf_col = 1
+            elif event.key == pygame.K_p:
+                paused = not paused  # Toggle pause state
+                if paused:
+                    display_pause_menu()
+            elif paused:
+                if event.key == pygame.K_s:
+                    run = False
 
+                    if not user_data:
+                        user_id = create_user(username)
+                    else:
+                        user_id = user_data[0]
 
-username = input("Your username:")
+                    save_game_state(user_id, body, speed)
+                    print("Game state saved!")
+                    
+                    pygame.quit()
+                    sys.exit()
 
+                elif event.key == pygame.K_c:
+                    paused = False
 
-# announcing class fruit
-class Fruit:
-    # initialization
-    def __init__(self):
-        self.randomize()
+    if paused:
+        continue
 
-    # method for drawing apple
-    def draw_fruit(self):
-        fruit_rect = pygame.Rect(
-            int(self.pos.x * cell_size),
-            int(self.pos.y * cell_size),
-            cell_size,
-            cell_size,
-        )
-        screen.blit(sized_apple, fruit_rect)
+    screen.fill((104, 33, 133))  # bg color
+    pygame.draw.rect(screen, (169, 13, 191), [0, 0, size[0], header_margin])
 
-    # randomly placing apple
-    def randomize(self):
-        self.x = random.randint(0, cell_number - 1)
-        self.y = random.randint(0, cell_number - 1)
-        self.pos = Vector2(self.x, self.y)
+    score = font.render(f"Score: {body}", True, (255, 255, 255))
+    speed_text = font.render(f"Speed: {speed}", True, (255, 255, 255))
 
+    screen.blit(score, (block_size, block_size))
+    screen.blit(speed_text, (block_size + 200, block_size))
 
-# announcing banana class
-class Banana:  # same with fruit
-    def __init__(self):
-        self.randomize()
+    for r in range(count_blocks):
+        for c in range(count_blocks):
+            color_block = (45, 236, 229) if (r + c) % 2 == 0 else (26, 140, 238)
+            draw_block(color_block, r, c)
 
-    def draw_banana(self):
-        banana_rect = pygame.Rect(
-            int(self.pos.x * cell_size),
-            int(self.pos.y * cell_size),
-            cell_size,
-            cell_size,
-        )
-        screen.blit(sized_banana, banana_rect)
+    head = snake_list[-1]
+    if not head.head_inside():
+        run = False
 
-    def randomize(self):
-        self.x = random.randint(0, cell_number - 1)
-        self.y = random.randint(0, cell_number - 1)
-        self.pos = Vector2(self.x, self.y)
+        if not user_data:
+            user_id = create_user(username)
+        else:
+            user_id = user_data[0]
 
+        save_game_state(user_id, body, speed)
+        print("Game state saved!")
 
-# announcing peach class
-class Peach:  # same with fruit
-    def __init__(self):
-        self.randomize()
+        pygame.quit()
+        sys.exit()
+        
 
-    def draw_peach(self):
-        peach_rect = pygame.Rect(
-            int(self.pos.x * cell_size),
-            int(self.pos.y * cell_size),
-            cell_size,
-            cell_size,
-        )
-        screen.blit(sized_peach, peach_rect)
+    # Draw and update food
+    # Inside the game loop, after processing events
 
-    def randomize(self):
-        self.x = random.randint(0, cell_number - 1)
-        self.y = random.randint(0, cell_number - 1)
-        self.pos = Vector2(self.x, self.y)
-
-
-# announcing snake class
-class Snake:
-    # initialization
-    def __init__(self):
-        self.body = [
-            Vector2(5, 10),
-            Vector2(4, 10),
-            Vector2(3, 10),
-        ]  # first three blocks
-        self.direction = Vector2(1, 0)  # direction
-        self.new_block = False
-
-    # for drawing snake
-    def draw_snake(self):
-        for block in self.body:
-            x_pos = int(block.x * cell_size)
-            y_pos = int(block.y * cell_size)
-            block_rect = pygame.Rect(x_pos, y_pos, cell_size, cell_size)
-            pygame.draw.rect(screen, (51, 51, 255), block_rect)
-
-    # method for moving snake
-    def move_snake(self):
-        if self.new_block == True:  # if we need new block
-            body_copy = self.body[:]
-            body_copy.insert(0, body_copy[0] + self.direction)
-            self.body = body_copy[:]
-            self.new_block = False
-        else:  # stays same, just moves around
-            body_copy = self.body[:-1]
-            body_copy.insert(0, body_copy[0] + self.direction)
-            self.body = body_copy[:]
-
-    # method for adding block in the back
-    def add_block(self):
-        self.new_block = True
+    # Update and draw food
+    # Inside the main game loop, replace the food drawing logic
+    for food in apples[:]:  # Loop through a copy of the list
+        food.time_to_live -= 1
+        if food.time_to_live <= 0:
+            apples.remove(food)
+            apples.append(random_food())  # Replace the disappeared food
+        else:
+            draw_food(food)  # Draw food using the new function that colors based on weight
 
 
-# main game
-class Main:
-    def __init__(self):
-        self.user_name = username
-        self.snake = Snake()  # add snake
-        self.fruit = Fruit()  # add fruit
-        self.banana = Banana()  # Add Banana instance
-        self.peach = Peach()  # Add Peach instance
-        self.fruits_eaten = 0  # number of eaten fruits
-        self.score = 0
-        self.timer_interval = 150  # speed of the game
-        self.level = 1  # level of the game
-        self.fruit_disappear_time = (
-            pygame.time.get_ticks()
-        )  # Initialize fruit disappear time
-        self.fruit_disappear_interval = (
-            6000  # Set the interval for fruit disappearance (in milliseconds)
-        )
+    # Check for collisions with any apple
+    for food in apples[:]:  # Make a copy of the list to iterate over
+        if food.x == head.x and food.y == head.y:
+            body += food.weight  # Increase body size by the weight of the food
+            speed = body // 5 + 1  # Update speed based on the new body length
+            apples.remove(food)  # Remove the eaten food
+            apples.append(random_food())  # Add new food to keep the food count consistent
 
-    def update(self):
-        self.snake.move_snake()  # moving snake
-        self.check_collision()  # check collision with apple, banana, peach
-        self.check_fail()  # check if snake exits the screen
-        self.manage_fruit_disappearance()  # disappearance and appearance of fruits
+            if body % 5 == 0:  # Optionally, add an extra food item every 5 points to increase difficulty
+                apples.append(random_food())
 
-    def manage_fruit_disappearance(self):
-        current_time = pygame.time.get_ticks()
-        if current_time - self.fruit_disappear_time >= self.fruit_disappear_interval:
-            self.fruit.randomize()  # placing apple
-            self.banana.randomize()  # placing banana
-            self.peach.randomize()  # Randomize the position of the peach
-            self.fruit_disappear_time = (
-                current_time  # Update the last disappearance time
-            )
+    # Move snake
+    d_row, d_col = buf_row, buf_col
+    new_head = SnakeBlock(head.x + d_row, head.y + d_col)
 
-    def draw_elements(self):
-        self.draw_grass()  # drawing grass, playing ground
-        self.fruit.draw_fruit()  # drawing apple
-        self.banana.draw_banana()  # Draw Banana
-        self.peach.draw_peach()  # Draw Peach
-        self.snake.draw_snake()  # draw snake
-        self.draw_score()  # draw scores on the screen
-        self.draw_level()  # drawing level on the screen
+    # Check if the new head position collides with the snake's body
+    if any(block.__eq__(new_head) for block in snake_list[:-1]):  # Exclude the tail from the check
+        run = False
 
-    def check_collision(self):
-        if self.fruit.pos == self.snake.body[0]:
-            self.fruit.randomize()
-            self.snake.add_block()  # adding block to snake
-            self.fruits_eaten += 1  # fruits eaten
-            self.score += 1
-            if (
-                self.fruits_eaten // 6 > 0
-                and self.fruits_eaten != 0
-                and self.timer_interval >= 45
-            ):
-                self.decrease_timer_interval()
-                self.level += 1  # making game faster
-                self.fruits_eaten = self.fruits_eaten % 6
-        # Collision with Banana
-        if self.banana.pos == self.snake.body[0]:
-            self.banana.randomize()
-            self.snake.add_block()  # adding block to snake
-            self.fruits_eaten += 2  # fruits eaten
-            self.score += 2
-            if (
-                self.fruits_eaten // 6 > 0
-                and self.fruits_eaten != 0
-                and self.timer_interval >= 45
-            ):
-                self.decrease_timer_interval()
-                self.level += 1  # making game faster
-                self.fruits_eaten = self.fruits_eaten % 6
-        # Collision with Peach
-        if self.peach.pos == self.snake.body[0]:
-            self.peach.randomize()
-            self.snake.add_block()  # adding block to snake
-            self.fruits_eaten += 4  # fruits eaten
-            self.score += 4
-            if (
-                self.fruits_eaten // 6 > 0
-                and self.fruits_eaten != 0
-                and self.timer_interval >= 45
-            ):
-                self.decrease_timer_interval()
-                self.level += 1  # making game faster
-                self.fruits_eaten = self.fruits_eaten % 6
+        if not user_data:
+            user_id = create_user(username)
+        else:
+            user_id = user_data[0]
 
-    def decrease_timer_interval(self):
-        self.timer_interval -= 15
-        pygame.time.set_timer(
-            SCREEN_UPDATE, self.timer_interval
-        )  # increasing speed of game
-
-    def check_fail(self):  # if sanke exits the screen
-        if (
-            not 0 <= self.snake.body[0].x < cell_number
-            or not 0 <= self.snake.body[0].y < cell_number
-        ):
-            self.game_over()
-
-        for block in self.snake.body[1:]:
-            if block == self.snake.body[0]:
-                self.game_over()
-
-    def game_over(self):
-        time.sleep(1.2)
-        insert_snakegame(self.user_name, self.score, self.level)
-        get_data()
+        save_game_state(user_id, body, speed)
+        print("Game state saved!")
+        
         pygame.quit()
         sys.exit()
 
-    def pause_game(self):
-        print("Game Paused")
-        insert_snakegame(self.user_name, self.score, self.level)
-        print(f"Current score: {self.score}, Current level: {self.level}")
+    # Add the new head to the snake
+    snake_list.append(new_head)
+    if len(snake_list) > body:
+        snake_list.pop(0)
 
-    def draw_grass(self):  # drawing grass
-        grass_color = (167, 209, 61)
-        for row in range(cell_number):
-            if row % 2 == 0:
-                for column in range(cell_number):
-                    if column % 2 == 0:
-                        grass_rect = pygame.Rect(
-                            column * cell_size, row * cell_size, cell_size, cell_size
-                        )
-                        pygame.draw.rect(screen, grass_color, grass_rect)
-            else:
-                for column in range(cell_number):
-                    if column % 2 == 1:
-                        grass_rect = pygame.Rect(
-                            column * cell_size, row * cell_size, cell_size, cell_size
-                        )
-                        pygame.draw.rect(screen, grass_color, grass_rect)
+    # Draw snake
+    for snake in snake_list:
+        draw_block((0, 200, 0) if snake == new_head else (0, 255, 0), snake.x, snake.y)
 
-    def draw_score(self):  # drawing score on screen
-        score_text = str(self.score)
-        score_surface = game_font.render(score_text, True, (56, 74, 12))
-        score_x = int(cell_size * cell_number - 60)
-        score_y = int(cell_size * cell_number - 40)
-        score_rect = score_surface.get_rect(center=(score_x, score_y))
-        apple_rect = sized_apple.get_rect(
-            midright=(score_rect.left, score_rect.centery)
-        )
-        screen.blit(score_surface, score_rect)
-        screen.blit(sized_apple, apple_rect)
+    pygame.display.flip()
+    clock.tick(2 + speed)
 
-    def draw_level(self):  # drawing level on screen
-        level_text = "Level: " + str(self.level)
-        level_surface = game_font.render(level_text, True, (56, 74, 12))
-        level_x = int(cell_size * cell_number - 60)
-        level_y = int(cell_size * cell_number - 640)
-        level_rect = level_surface.get_rect(center=(level_x, level_y))
-        screen.blit(level_surface, level_rect)
-
-
-pygame.init()
-cell_size = 40
-cell_number = 20
-screen = pygame.display.set_mode(
-    (cell_number * cell_size, cell_number * cell_size)
-)  # getting screen size
-pygame.display.set_caption("Snake Game")
-fps = pygame.time.Clock()  # frames per second
-apple = pygame.image.load(
-    "images/snake_apple.png"
-).convert_alpha()  # getting apple image
-sized_apple = pygame.transform.scale(
-    apple, (40, 40)
-)  # resizing it to the size of the cell
-banana = pygame.image.load("images/banana.png").convert_alpha()  # getting apple image
-sized_banana = pygame.transform.scale(
-    banana, (40, 40)
-)  # resizing it to the size of the cell
-peach = pygame.image.load("images/peach.png").convert_alpha()  # getting apple image
-sized_peach = pygame.transform.scale(
-    peach, (40, 40)
-)  # resizing it to the size of the cell
-
-# getting size of the game font
-game_font = pygame.font.Font(None, 40)
-# getting the interval in which the game will be updated
-SCREEN_UPDATE = pygame.USEREVENT
-pygame.time.set_timer(SCREEN_UPDATE, 150)
-# main game object
-main_game = Main()
-
-running = True
-while running:
-    for event in pygame.event.get():
-        # for ending the game
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        if event.type == SCREEN_UPDATE:
-            main_game.update()  # updating the screen
-        if event.type == pygame.KEYDOWN:
-            # changing the direction of snake
-            if event.key == pygame.K_UP and main_game.snake.direction.y != 1:
-                main_game.snake.direction = Vector2(0, -1)
-            if event.key == pygame.K_DOWN and main_game.snake.direction.y != -1:
-                main_game.snake.direction = Vector2(0, 1)
-            if event.key == pygame.K_RIGHT and main_game.snake.direction.x != -1:
-                main_game.snake.direction = Vector2(1, 0)
-            if event.key == pygame.K_LEFT and main_game.snake.direction.x != 1:
-                main_game.snake.direction = Vector2(-1, 0)
-            if event.key == pygame.K_p:
-                main_game.game_pause()
-    # color of screen
-    screen.fill((175, 215, 70))
-    # drawing game elements onto the screen
-    main_game.draw_elements()
-
-    pygame.display.update()
-    fps.tick(120)
-
-# Retrieve data from the Phonebook table
+cur.close()
+conn.close()
