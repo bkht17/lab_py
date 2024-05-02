@@ -214,6 +214,20 @@ def search(pattern):
             print(f"Error searching for contacts: {error}")
             return []
 
+def get_by_limit_and_offset(limit, offset):
+    try:
+        with psycopg2.connect(**config) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM phonebook LIMIT %s OFFSET %s",(limit, offset))
+                rows = cur.fetchall()
+
+                for row in rows:
+                    print(f'User: {row[0]} || Phone: {row[1]}')
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)    
+    
+
 csv = read_csv("lab11/task1/another_data.csv")
 #upload_csv(csv)
 #insert_data(str(input()), str(input()))
@@ -222,5 +236,6 @@ csv = read_csv("lab11/task1/another_data.csv")
 #delete_number(str(input()))
 #print(search(input()))
 #handle_user_update()
-insert_many_users([('Daur', '87777777777'), ('Hello', '87777777778')])
+#insert_many_users([('Daur', '87777777777'), ('Hello', '87777777778')])
+#get_by_limit_and_offset(2, 1)
     
